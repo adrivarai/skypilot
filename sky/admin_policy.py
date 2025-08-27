@@ -8,11 +8,11 @@ import colorama
 import pydantic
 
 from sky import exceptions
+from sky import task as task_lib
 from sky.adaptors import common as adaptors_common
 from sky.utils import common_utils
 from sky.utils import config_utils
 from sky.utils import ux_utils
-from sky import task as task_lib
 
 if typing.TYPE_CHECKING:
     import requests
