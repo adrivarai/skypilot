@@ -41,6 +41,7 @@ from sky import skypilot_config
 from sky.server import common as server_common
 from sky.server import config as server_config
 from sky.server import constants as server_constants
+from sky.server import metrics as metrics_lib
 from sky.server.requests import payloads
 from sky.server.requests import preconditions
 from sky.server.requests import process
@@ -56,6 +57,7 @@ from sky.utils import subprocess_utils
 from sky.utils import tempstore
 from sky.utils import timeline
 from sky.utils import yaml_utils
+from sky.utils.db import db_utils
 from sky.workspaces import core as workspaces_core
 
 if typing.TYPE_CHECKING:
@@ -151,6 +153,8 @@ class RequestWorker:
         self.schedule_type = schedule_type
         self.garanteed_parallelism = config.garanteed_parallelism
         self.burstable_parallelism = config.burstable_parallelism
+        self.num_db_connections_per_worker = (
+            config.num_db_connections_per_worker)
         self._thread: Optional[threading.Thread] = None
         self._cancel_event = threading.Event()
 
@@ -189,8 +193,9 @@ class RequestWorker:
             # multiple requests can share the same process pid, which may cause
             # issues with SkyPilot core functions if they rely on the exit of
             # the process, such as subprocess_daemon.py.
-            fut = executor.submit_until_success(_request_execution_wrapper,
-                                                request_id, ignore_return_value)
+            fut = executor.submit_until_success(
+                _request_execution_wrapper, request_id, ignore_return_value,
+                self.num_db_connections_per_worker)
             # Monitor the result of the request execution.
             threading.Thread(target=self.handle_task_result,
                              args=(fut, request_element),
@@ -350,7 +355,8 @@ def _sigterm_handler(signum: int, frame: Optional['types.FrameType']) -> None:
 
 
 def _request_execution_wrapper(request_id: str,
-                               ignore_return_value: bool) -> None:
+                               ignore_return_value: bool,
+                               num_db_connections_per_worker: int = 0) -> None:
     """Wrapper for a request execution.
 
     It wraps the execution of a request to:
@@ -361,6 +367,7 @@ def _request_execution_wrapper(request_id: str,
     4. Handle the SIGTERM signal to abort the request gracefully.
     5. Maintain the lifecycle of the temp dir used by the request.
     """
+    db_utils.set_max_connections(num_db_connections_per_worker)
     # Handle the SIGTERM signal to abort the request processing gracefully.
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
@@ -373,6 +380,7 @@ def _request_execution_wrapper(request_id: str,
         request_task.status = api_requests.RequestStatus.RUNNING
         func = request_task.entrypoint
         request_body = request_task.request_body
+        request_name = request_task.name
 
     # Append to the log file instead of overwriting it since there might be
     # logs from previous retries.
@@ -390,7 +398,9 @@ def _request_execution_wrapper(request_id: str,
                     config = skypilot_config.to_dict()
                     logger.debug(f'request config: \n'
                                  f'{yaml_utils.dump_yaml_str(dict(config))}')
-                return_value = func(**request_body.to_kwargs())
+                with metrics_lib.time_it(name=request_name,
+                                         group='request_execution'):
+                    return_value = func(**request_body.to_kwargs())
                 f.flush()
         except KeyboardInterrupt:
             logger.info(f'Request {request_id} cancelled by user')
@@ -453,7 +463,7 @@ async def execute_request_coroutine(request: api_requests.Request):
                                                   **request_body.to_kwargs())
 
     async def poll_task(request_id: str) -> bool:
-        request = api_requests.get_request(request_id)
+        request = await api_requests.get_request_async(request_id)
         if request is None:
             raise RuntimeError('Request not found')
 
