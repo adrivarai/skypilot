@@ -543,7 +543,7 @@ def get_gpu_df(skus: List[Dict[str, Any]],
             elif row_gpu_name == 'H200':
                 gpu_names = ['H200 141GB GPU']
             elif row_gpu_name == 'B200':
-                gpu_names = ['Nvidia B200 (1 gpu slice)']
+                gpu_names = ['A4 Nvidia B200 (1 gpu slice)']
             if not any(
                     gpu_name in sku['description'] for gpu_name in gpu_names):
                 continue
